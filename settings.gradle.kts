@@ -1,0 +1,1 @@
+rootProject.name = "ebnf4j-intellj-plugin"

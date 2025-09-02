@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<idea-plugin>
+  <id>com.sverko.ebnf4j</id>
+    <name>EBNF4J</name>
+    <version>1.0.0</version>
+
+  <vendor email="sverko@sverko.com" url="https://github.com/sivale/ebnf4j-parser-generator">open source project</vendor>
+
+    <description>
+        IntelliJ IDEA plugin providing basic support for EBNF files (syntax highlighting and groundwork for future features).
+    </description>
+
+  <!-- Compatibility range. Keep in sync with Gradle (sinceBuild/untilBuild). -->
+    <idea-version since-build="233" until-build="252.*"/>
+
+  <!-- Module dependencies: declare Platform and Language base modules -->
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.lang</depends>
+    <!-- Register file type and syntax highlighter -->
+    <extensions defaultExtensionNs="com.intellij">
+      <externalAnnotator language="EBNF" implementationClass="com.sverko.ebnf4j.annotator.EbnfExternalAnnotator"/>
+      <spellchecker.support language="EBNF" implementationClass="com.sverko.ebnf4j.EbnfSpellcheckingStrategy"/>
+      
+      <!-- ADD THIS LINE: -->
+      <lang.parserDefinition language="EBNF" implementationClass="com.sverko.ebnf4j.parser.EbnfParserDefinition"/>
+      <completion.contributor language="EBNF" implementationClass="com.sverko.ebnf4j.completion.EbnfCompletionContributor"/>
+    <fileType
+        name="EBNF file"
+        language="EBNF"
+        extensions="ebnf"
+        implementationClass="com.sverko.ebnf4j.EbnfFileType"/>
+    <lang.syntaxHighlighterFactory
+        language="EBNF"
+        implementationClass="com.sverko.ebnf4j.highlighting.EbnfSyntaxHighlighterFactory"/>
+    <colorSettingsPage implementation="com.sverko.ebnf4j.highlighting.EbnfColorSettingsPage"/>
+    <toolWindow id="EBNF Live Tester"
+        factoryClass="com.sverko.ebnf4j.toolwindow.EbnfLiveTesterToolWindowFactory"
+        anchor="right"/>
+    </extensions>
+</idea-plugin>
