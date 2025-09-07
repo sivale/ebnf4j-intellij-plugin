@@ -9,7 +9,6 @@ import com.intellij.openapi.editor.event.DocumentEvent;
 import com.intellij.openapi.editor.event.DocumentListener;
 import com.intellij.openapi.editor.markup.HighlighterLayer;
 import com.intellij.openapi.editor.markup.HighlighterTargetArea;
-import com.intellij.openapi.editor.markup.MarkupModel;
 import com.intellij.openapi.editor.markup.TextAttributes;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.fileEditor.FileEditorManager;
@@ -51,7 +50,7 @@ public class EbnfLiveTesterPanel implements Disposable {
   private @Nullable DocumentListener schemaDocListener;
   private @Nullable DocumentListener testDocListener;
 
-  private static final int ERROR_DEBOUNCE_MS = 2000;
+  private static final int ERROR_DEBOUNCE_MS = 1000;
   private final Alarm errorAlarm = new Alarm(Alarm.ThreadToUse.SWING_THREAD, this);
 
   private final List<RangeHighlighter> greenHighlighters = new ArrayList<>();
@@ -237,19 +236,23 @@ public class EbnfLiveTesterPanel implements Disposable {
 
       int parseResult = parser.parse(testText);
 
-      // Tokens des Testtexts (ohne Whitespaces, gemäß ignoreWhitespace=true)
+      // Tokens des Testtexts (gemäß ignoreWhitespace=true)
       List<String> testTokens = parser.getLexer().lexText(testText);
 
-      // NEU: tokenweise Segmente
-      List<MatchResult> green = computeMatchedTokenSegments(testText, testTokens, parseResult);
+      // NEU: -1 (END_OF_QUEUE) bedeutet: "bis hierhin ok" → alle bisherigen Tokens als gematcht zählen
+      int effectiveMatched = (parseResult == -1)
+          ? testTokens.size()
+          : Math.max(0, Math.min(parseResult, testTokens.size()));
+
+      List<MatchResult> green = computeMatchedTokenSegments(testText, testTokens, effectiveMatched);
       results.addAll(green);
 
-      // Roter Bereich = „Tail“, wenn der Parser vorher gestoppt hat
-      int tailStart = green.isEmpty() ? 0 : green.get(green.size()-1).endOffset;
-
-      // Wenn parseResult >= 0, dann war's ein sauberes Stoppen (nicht -1); wir färben den Rest rot
-      if (tailStart < testText.length() && parseResult >= 0) {
-        results.add(new MatchResult(tailStart, testText.length(), false));
+      // Roten Tail NUR planen, wenn der Parser einen echten Stop-Index liefert (>= 0)
+      if (!green.isEmpty() && parseResult >= 0) {
+        int tailStart = green.get(green.size() - 1).endOffset;
+        if (tailStart < testText.length()) {
+          results.add(new MatchResult(tailStart, testText.length(), false));
+        }
       }
 
     } catch (Exception e) {
@@ -260,42 +263,28 @@ public class EbnfLiveTesterPanel implements Disposable {
     return results;
   }
 
-  private List<MatchResult> computeMatchedTokenSegments(String text, List<String> tokens, int parseResult) {
+  private List<MatchResult> computeMatchedTokenSegments(String text, List<String> tokens, int matchedCount) {
     List<MatchResult> segs = new ArrayList<>();
-    if (parseResult <= 0 || text == null || text.isEmpty() || tokens == null || tokens.isEmpty()) {
+    if (matchedCount <= 0 || text == null || text.isEmpty() || tokens == null || tokens.isEmpty()) {
       return segs;
     }
-
-    int i = 0;                   // Cursor im Originaltext
-    int consumed = 0;
-    int max = Math.min(parseResult, tokens.size());
-
-    while (consumed < max && i < text.length()) {
-      // Whitespace im Text einfach überspringen – NICHT highlighten
+    int i = 0, consumed = 0;
+    while (consumed < matchedCount && i < text.length()) {
       while (i < text.length()) {
         int cp = text.codePointAt(i);
         int cc = Character.charCount(cp);
         if (!Character.isWhitespace(cp)) break;
-        i += cc;
+        i += cc; // Whitespace nicht highlighten
       }
-      if (consumed >= max) break;
-
+      if (consumed >= matchedCount) break;
       String tok = tokens.get(consumed);
       if (tok == null || tok.isEmpty()) break;
-
-      // Token muss exakt an Position i starten
       if (i + tok.length() <= text.length() && text.startsWith(tok, i)) {
-        int start = i;
-        int end   = i + tok.length();
-        segs.add(new MatchResult(start, end, true)); // nur das Wort, kein WS
+        segs.add(new MatchResult(i, i + tok.length(), true)); // nur das Wort
         i += tok.length();
         consumed++;
-      } else {
-        // Abbruch auf erstem Nicht-Match – Parser hat hier aufgehört
-        break;
-      }
+      } else break;
     }
-
     return segs;
   }
 
