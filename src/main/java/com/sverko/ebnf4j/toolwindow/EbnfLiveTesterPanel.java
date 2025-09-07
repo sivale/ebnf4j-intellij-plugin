@@ -29,6 +29,8 @@ import com.sverko.ebnf4j.EbnfFileType;
 import java.util.List;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import com.intellij.util.Alarm;
+import com.intellij.openapi.editor.markup.RangeHighlighter;
 
 import javax.swing.*;
 import java.awt.*;
@@ -48,6 +50,12 @@ public class EbnfLiveTesterPanel implements Disposable {
 
   private @Nullable DocumentListener schemaDocListener;
   private @Nullable DocumentListener testDocListener;
+
+  private static final int ERROR_DEBOUNCE_MS = 2000;
+  private final Alarm errorAlarm = new Alarm(Alarm.ThreadToUse.SWING_THREAD, this);
+
+  private final List<RangeHighlighter> greenHighlighters = new ArrayList<>();
+  private final List<RangeHighlighter> redHighlighters   = new ArrayList<>();
 
   // Highlighting
   private static final TextAttributes MATCH_ATTRIBUTES = new TextAttributes(
@@ -207,7 +215,7 @@ public class EbnfLiveTesterPanel implements Disposable {
       }
 
       List<MatchResult> matches = parseAndMatch(schema, testText);
-      applyHighlighting(matches);
+      applyHighlightsWithDelay(matches);
 
     } catch (Exception e) {
       System.err.println("Error in live updating: " + e.getMessage());
@@ -229,16 +237,21 @@ public class EbnfLiveTesterPanel implements Disposable {
 
       int parseResult = parser.parse(testText);
 
+      // Tokens des Testtexts (ohne Whitespaces, gemäß ignoreWhitespace=true)
       List<String> testTokens = parser.getLexer().lexText(testText);
 
-      int matchedChars = offsetByScanningOriginalText(testText, testTokens, parseResult);
+      // NEU: tokenweise Segmente
+      List<MatchResult> green = computeMatchedTokenSegments(testText, testTokens, parseResult);
+      results.addAll(green);
 
-      if (parseResult > 0) {
-        results.add(new MatchResult(0, Math.min(matchedChars, testText.length()), true));
+      // Roter Bereich = „Tail“, wenn der Parser vorher gestoppt hat
+      int tailStart = green.isEmpty() ? 0 : green.get(green.size()-1).endOffset;
+
+      // Wenn parseResult >= 0, dann war's ein sauberes Stoppen (nicht -1); wir färben den Rest rot
+      if (tailStart < testText.length() && parseResult >= 0) {
+        results.add(new MatchResult(tailStart, testText.length(), false));
       }
-      if (matchedChars < testText.length() && parseResult >= 0) {
-        results.add(new MatchResult(Math.max(0, matchedChars), testText.length(), false));
-      }
+
     } catch (Exception e) {
       System.err.println("Error parsing: " + e.getMessage());
       results.clear();
@@ -247,58 +260,99 @@ public class EbnfLiveTesterPanel implements Disposable {
     return results;
   }
 
-  private int offsetByScanningOriginalText(String text, List<String> tokens, int parseResult) {
+  private List<MatchResult> computeMatchedTokenSegments(String text, List<String> tokens, int parseResult) {
+    List<MatchResult> segs = new ArrayList<>();
     if (parseResult <= 0 || text == null || text.isEmpty() || tokens == null || tokens.isEmpty()) {
-      return 0;
+      return segs;
     }
-    int i = 0;
-    int matched = 0;
+
+    int i = 0;                   // Cursor im Originaltext
     int consumed = 0;
     int max = Math.min(parseResult, tokens.size());
 
     while (consumed < max && i < text.length()) {
+      // Whitespace im Text einfach überspringen – NICHT highlighten
       while (i < text.length()) {
         int cp = text.codePointAt(i);
         int cc = Character.charCount(cp);
         if (!Character.isWhitespace(cp)) break;
-        if (consumed > 0) matched += cc;
         i += cc;
       }
-
       if (consumed >= max) break;
 
       String tok = tokens.get(consumed);
       if (tok == null || tok.isEmpty()) break;
 
+      // Token muss exakt an Position i starten
       if (i + tok.length() <= text.length() && text.startsWith(tok, i)) {
-        matched += tok.length();
+        int start = i;
+        int end   = i + tok.length();
+        segs.add(new MatchResult(start, end, true)); // nur das Wort, kein WS
         i += tok.length();
         consumed++;
       } else {
+        // Abbruch auf erstem Nicht-Match – Parser hat hier aufgehört
         break;
       }
     }
-    return matched;
+
+    return segs;
   }
 
-  private void applyHighlighting(List<MatchResult> matches) {
+  private void applyHighlightsWithDelay(List<MatchResult> matches) {
     if (currentTestEditor == null) return;
-    clearHighlighting();
-    MarkupModel markupModel = currentTestEditor.getMarkupModel();
+
+    // bei jeder Änderung: alles Alte weg, Grün sofort neu setzen
+    errorAlarm.cancelAllRequests();
+    removeGreenHighlighters();
+    removeRedHighlighters();
+
+    var doc = currentTestEditor.getDocument();
+    long stamp = doc.getModificationStamp();
+    var mm = currentTestEditor.getMarkupModel();
+
+    // 4a) Grün sofort
     for (MatchResult m : matches) {
-      markupModel.addRangeHighlighter(
+      if (!m.isMatch) continue;
+      RangeHighlighter hl = mm.addRangeHighlighter(
           m.startOffset, m.endOffset,
           HighlighterLayer.SELECTION - 1,
-          m.isMatch ? MATCH_ATTRIBUTES : ERROR_ATTRIBUTES,
+          MATCH_ATTRIBUTES,
           HighlighterTargetArea.EXACT_RANGE
       );
+      greenHighlighters.add(hl);
     }
+
+    // 4b) Rot später (nur wenn es überhaupt rote Ranges gibt)
+    boolean hasRed = matches.stream().anyMatch(x -> !x.isMatch);
+    if (!hasRed) return;
+
+    errorAlarm.addRequest(() -> {
+      // nur anwenden, wenn sich der Text seit dem Planen nicht verändert hat
+      if (currentTestEditor == null) return;
+      if (currentTestEditor.getDocument().getModificationStamp() != stamp) return;
+
+      // falls zwischenzeitlich was Rot gesetzt wurde, bereinigen
+      removeRedHighlighters();
+
+      for (MatchResult m : matches) {
+        if (m.isMatch) continue;
+        RangeHighlighter hl = mm.addRangeHighlighter(
+            m.startOffset, m.endOffset,
+            HighlighterLayer.SELECTION - 1,
+            ERROR_ATTRIBUTES,
+            HighlighterTargetArea.EXACT_RANGE
+        );
+        redHighlighters.add(hl);
+      }
+    }, ERROR_DEBOUNCE_MS);
   }
 
+
   private void clearHighlighting() {
-    if (currentTestEditor != null) {
-      currentTestEditor.getMarkupModel().removeAllHighlighters();
-    }
+    errorAlarm.cancelAllRequests();
+    removeGreenHighlighters();
+    removeRedHighlighters();
   }
 
   public JComponent getComponent() { return mainPanel; }
@@ -317,4 +371,19 @@ public class EbnfLiveTesterPanel implements Disposable {
     final int startOffset, endOffset; final boolean isMatch;
     MatchResult(int s, int e, boolean ok) { this.startOffset = s; this.endOffset = e; this.isMatch = ok; }
   }
+
+  private void removeGreenHighlighters() {
+    if (currentTestEditor == null) return;
+    var mm = currentTestEditor.getMarkupModel();
+    for (RangeHighlighter hl : greenHighlighters) mm.removeHighlighter(hl);
+    greenHighlighters.clear();
+  }
+
+  private void removeRedHighlighters() {
+    if (currentTestEditor == null) return;
+    var mm = currentTestEditor.getMarkupModel();
+    for (RangeHighlighter hl : redHighlighters) mm.removeHighlighter(hl);
+    redHighlighters.clear();
+  }
+
 }
