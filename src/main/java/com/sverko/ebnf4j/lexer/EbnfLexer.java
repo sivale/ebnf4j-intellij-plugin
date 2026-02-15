@@ -64,6 +64,24 @@ public class EbnfLexer extends LexerBase implements EbnfTokenTypes {
       return;
     }
 
+    // Meta identifiers like \n, \t, \s should behave like IDENTIFIER tokens
+    if (c == '\\') {
+      if (tokenStart + 1 < endOffset) {
+        char next = buffer.charAt(tokenStart + 1);
+
+        // Keep this list in sync with predefined schema meta identifiers
+        if (next == 'n' || next == 't' || next == 's') {
+          tokenEnd = tokenStart + 2;
+          tokenType = IDENTIFIER;
+          return;
+        }
+      }
+      // Standalone '\' is invalid in this language
+      tokenEnd = tokenStart + 1;
+      tokenType = BAD_CHAR;
+      return;
+    }
+
     // Operators / delimiters
     switch (c) {
       case '=': tokenEnd = tokenStart + 1; tokenType = ASSIGN; return;

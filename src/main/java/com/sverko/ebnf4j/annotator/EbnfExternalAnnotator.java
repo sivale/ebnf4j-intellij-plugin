@@ -6,9 +6,12 @@ import com.intellij.lang.annotation.HighlightSeverity;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.util.TextRange;
 import com.intellij.psi.PsiFile;
+import com.sverko.ebnf.EbnfParserGenerator;
 import com.sverko.ebnf.ParseNode;
+import com.sverko.ebnf.TokenQueue;
 import com.sverko.ebnf4j.EbnfFileType;
 import com.sverko.ebnf4j.EbnfLanguage;
+import java.util.Collections;
 import java.util.Map;
 import java.util.Set;
 import org.jetbrains.annotations.NotNull;
@@ -69,15 +72,15 @@ public class EbnfExternalAnnotator extends ExternalAnnotator<EbnfExternalAnnotat
 
     try {
       long startTime = System.currentTimeMillis();
-
-      EbnfSymbolTracker symbolTracker = new EbnfSymbolTracker();
+      EbnfParserGenerator generator = new EbnfParserGenerator();
+      EbnfSymbolTracker symbolTracker = new EbnfSymbolTracker(generator.getPredefinedNodeNames());
 
       // Use the EBNF Lexer to get tokens (for offset calculation)
-      com.sverko.ebnf.Lexer ebnfLexer = new com.sverko.ebnf.Lexer();
-      java.util.List<String> tokens = ebnfLexer.lexText(input.text);
+      com.sverko.ebnf.Lexer ebnfLexer = new com.sverko.ebnf.Lexer(Set.of("\\n","\\t","\\s"), true);
+      TokenQueue tokens = ebnfLexer.lexText(input.text);
 
       // Build token→document mapping (start + length per token)
-      TokenMap tm = computeTokenMapExactSearch(input.text, tokens);
+      TokenMap tm = computeTokenMapByCumulativeOffsets(input.text, tokens.getTokens());
       int[] tokenStartOffsets = tm.starts;
       int[] tokenLengths = tm.lengths;
 
@@ -89,8 +92,8 @@ public class EbnfExternalAnnotator extends ExternalAnnotator<EbnfExternalAnnotat
       com.sverko.ebnf.Parser schemaParser = new com.sverko.ebnf.Parser(
           ebnfSchemaStartNode,
           ebnfNodeMap,
-          Set.of(), // No special lexer tokens needed for EBNF schema
-          true      // Ignore whitespace
+          Set.of("\\n","\\t","\\s"), // No special lexer tokens needed for EBNF schema
+          false // strict whitespace handling
       );
 
       // Add symbol tracker as event listener to all relevant EBNF nodes
@@ -125,8 +128,7 @@ public class EbnfExternalAnnotator extends ExternalAnnotator<EbnfExternalAnnotat
             "Syntax error: unexpected token '" + errorToken + "'",
             HighlightSeverity.ERROR));
       }
-      // Note: parseResult == -1 (END_OF_QUEUE) is ignored during input - that's normal
-
+      // Note: parseResult == -2 (END_OF_QUEUE) is ignored during input - that's normal
       // After existing symbol tracking, add logical analysis
       EbnfLogicAnalyzer logicAnalyzer = new EbnfLogicAnalyzer(symbolTracker.getDefinitions());
       List<EbnfLogicAnalyzer.LogicalIssue> logicalIssues = logicAnalyzer.analyzeGrammar(input.text, tokens);
@@ -161,7 +163,7 @@ public class EbnfExternalAnnotator extends ExternalAnnotator<EbnfExternalAnnotat
 
       for (EbnfSymbolTracker.SymbolInfo def : symbolTracker.getDefinitions()) {
         int s = Math.max(0, def.startTokenIndex);
-        int e = Math.min(tokens.size(), Math.max(s, def.endTokenIndex));
+        int e = Math.min(tokens.rawSize(), Math.max(s, def.endTokenIndex));
         for (int ti = s; ti < e; ti++) {
           int startOffset = tokenStartOffsets[ti];
           int endOffset   = startOffset + tokenLengths[ti];
@@ -193,11 +195,6 @@ public class EbnfExternalAnnotator extends ExternalAnnotator<EbnfExternalAnnotat
 
   // ---- Mapping-Utilities ----------------------------------------------------
 
-  /**
-   * Enthält Start-Offsets und Längen aller Tokens, gemappt auf Dokument-Offsets.
-   * Wichtig: Whitespaces im Dokument werden beim Finden des Starts übersprungen
-   * (Parser ignoriert sie). Das Ende eines Single-Token-Hits ist dann start + length.
-   */
   private static class TokenMap {
     final int[] starts;
     final int[] lengths;
@@ -207,32 +204,26 @@ public class EbnfExternalAnnotator extends ExternalAnnotator<EbnfExternalAnnotat
     }
   }
 
-  /**
-   * Maps a list of tokens (no whitespace tokens) to document offsets by scanning forward in the original text.
-   * Whitespaces zwischen Tokens werden im Dokument übersprungen (Parser-Logik).
-   */
-  private static TokenMap computeTokenMapExactSearch(String text, java.util.List<String> tokens) {
+  private static TokenMap computeTokenMapByCumulativeOffsets(String text, List<String> tokens) {
     int[] starts = new int[tokens.size()];
     int[] lengths = new int[tokens.size()];
+
     int cursor = 0;
+    for (int i = 0; i < tokens.size(); i++) {
+      String tok = tokens.get(i);
+      if (tok == null) tok = "";
 
-    for (int ti = 0; ti < tokens.size(); ti++) {
-      String tok = tokens.get(ti);
-      int start = text.indexOf(tok, cursor);
-      if (start < 0) {
-        // Fallback: try global search to avoid -1; in der Praxis sehr selten
-        start = text.indexOf(tok);
-        if (start < 0) {
-          // Ultimativer Fallback: setze auf cursor (verhindert NPEs)
-          start = Math.min(cursor, text.length());
-        }
+      starts[i] = cursor;
+      lengths[i] = tok.length();
+      cursor += tok.length();
+
+      if (cursor > text.length()) {
+        // safety: clamp
+        starts[i] = Math.min(starts[i], text.length());
+        lengths[i] = Math.max(0, text.length() - starts[i]);
+        cursor = text.length();
       }
-      starts[ti] = start;
-      lengths[ti] = tok.length();
-      // Weiter direkt hinter diesem Token suchen
-      cursor = start + tok.length();
     }
-
     return new TokenMap(starts, lengths);
   }
 

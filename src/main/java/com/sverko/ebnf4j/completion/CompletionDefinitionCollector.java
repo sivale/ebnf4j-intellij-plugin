@@ -12,10 +12,10 @@ public class CompletionDefinitionCollector implements ParseNodeEventListener {
 
   @Override
   public void parseNodeEventOccurred(ParseNodeEvent e) {
-    switch (e.parseNode.name) {
+    switch (e.getNode().getName()) {
       case "meta identifier":
-          definitionNames.add(e.resultString);
-          System.out.println("DEBUG: Found definition: " + e.resultString);
+          definitionNames.add(e.getTrimmed());
+          System.out.println("DEBUG: Found definition: " + e.getTrimmed());
       break;
 
       case "defining symbol":

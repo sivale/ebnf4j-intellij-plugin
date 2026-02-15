@@ -14,7 +14,6 @@ import com.intellij.psi.tree.TokenSet;
 import com.sverko.ebnf4j.EbnfLanguage;
 import com.sverko.ebnf4j.lexer.EbnfLexer;
 import com.sverko.ebnf4j.lexer.EbnfTokenTypes;
-import com.sverko.ebnf4j.psi.EbnfElementTypes;
 import com.sverko.ebnf4j.psi.EbnfFile;
 import com.sverko.ebnf4j.psi.EbnfPsiElement;
 import org.jetbrains.annotations.NotNull;
