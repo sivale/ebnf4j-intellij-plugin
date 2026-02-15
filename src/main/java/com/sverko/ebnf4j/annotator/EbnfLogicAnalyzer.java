@@ -1,6 +1,7 @@
 package com.sverko.ebnf4j.annotator;
 
 import com.intellij.lang.annotation.HighlightSeverity;
+import com.sverko.ebnf.TokenQueue;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -24,13 +25,13 @@ public class EbnfLogicAnalyzer {
         }
     }
     
-    public List<LogicalIssue> analyzeGrammar(String text, List<String> tokens) {
+    public List<LogicalIssue> analyzeGrammar(String text, TokenQueue tokens) {
         List<LogicalIssue> issues = new ArrayList<>();
         
-        findUnreachableAlternatives(tokens, issues);
-        findAlwaysEmptyLoops(tokens, issues);
-        findRedundantOptionals(tokens, issues);
-        findInvalidRepetitions(tokens, issues);
+        findUnreachableAlternatives(tokens.getTokens(), issues);
+        findAlwaysEmptyLoops(tokens.getTokens(), issues);
+        findRedundantOptionals(tokens.getTokens(), issues);
+        findInvalidRepetitions(tokens.getTokens(), issues);
         
         return issues;
     }

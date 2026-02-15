@@ -24,6 +24,7 @@ import com.intellij.util.ui.JBUI;
 import com.sverko.ebnf.EbnfParserGenerator;
 import com.sverko.ebnf.Lexer;
 import com.sverko.ebnf.Parser;
+import com.sverko.ebnf.TokenQueue;
 import com.sverko.ebnf4j.EbnfFileType;
 import java.util.List;
 import org.jetbrains.annotations.NotNull;
@@ -64,8 +65,6 @@ public class EbnfLiveTesterPanel implements Disposable {
 
   public EbnfLiveTesterPanel(Project project) {
     this.project = project;
-
-
     mainPanel = new SimpleToolWindowPanel(true, true);
     JPanel root = new JPanel(new BorderLayout());
     root.setBorder(BorderFactory.createEmptyBorder());
@@ -98,6 +97,14 @@ public class EbnfLiveTesterPanel implements Disposable {
 
     VirtualFile[] selected = FileEditorManager.getInstance(project).getSelectedFiles();
     attachSchemaFileAsync(selected.length > 0 ? selected[0] : null);
+  }
+
+  private static boolean isWsToken(String tok) {
+    if (tok == null || tok.isEmpty()) return false;
+    for (int i = 0; i < tok.length(); i++) {
+      if (!Character.isWhitespace(tok.charAt(i))) return false;
+    }
+    return true;
   }
 
   private static JComponent placeholder(String text) {
@@ -225,31 +232,50 @@ public class EbnfLiveTesterPanel implements Disposable {
   private List<MatchResult> parseAndMatch(String schema, String testText) {
     List<MatchResult> results = new ArrayList<>();
     try {
-      Lexer schemaLexer = Lexer.builder()
-          .ignoreWhitespace(true)
-          .preserveWhitespaceInQuotes(true)
-          .build();
-      List<String> schemaTokens = schemaLexer.lexText(schema);
+      Lexer schemaLexer = new Lexer(Set.of("\\n","\\t","\\s"));
+      TokenQueue schemaTokens = schemaLexer.lexText(schema);
 
       EbnfParserGenerator generator = new EbnfParserGenerator();
       Parser parser = generator.getParser(schemaTokens, true);
 
-      int parseResult = parser.parse(testText);
+      // Gesamter Parse
+      int rFull = parser.parse(testText);
 
-      // Tokens des Testtexts (gemäß ignoreWhitespace=true)
-      List<String> testTokens = parser.getLexer().lexText(testText);
+      // Test-Tokens + Segmente (mit dem Lexer des Parsers, gleiche Flags)
+      TokenQueue testTokens = parser.getLexer().lexText(testText);
+      List<int[]> segs = lexTokenSegments(testText, testTokens);
 
-      // NEU: -1 (END_OF_QUEUE) bedeutet: "bis hierhin ok" → alle bisherigen Tokens als gematcht zählen
-      int effectiveMatched = (parseResult == -1)
-          ? testTokens.size()
-          : Math.max(0, Math.min(parseResult, testTokens.size()));
+      // Akzeptierte Token-Anzahl bestimmen
+      int accepted;
+      if (rFull == testTokens.size()) {
+        // kompletter Erfolg
+        accepted = segs.size();
+      } else if (rFull >= 0 && rFull < testTokens.size()) {
+        // Parser hat n akzeptiert und dann Schluss gemacht → n ist Präfix
+        accepted = Math.min(rFull, segs.size());
+      } else if (rFull == -2) {
+        // EndOfQueue zu früh: alles bisherige ist akzeptiert
+        accepted = segs.size();
+      } else {
+        // -1, -100 oder sonstiger Fehler: via Präfix-Suche ermitteln
+        accepted = longestAcceptedPrefixCount(parser, testText, segs);
+      }
 
-      List<MatchResult> green = computeMatchedTokenSegments(testText, testTokens, effectiveMatched);
-      results.addAll(green);
+      // Grün: genau die akzeptierten Token-Segmente
+      for (int i = 0; i < accepted; i++) {
+        int[] s = segs.get(i);
+        String tok = testTokens.get(i);
+        if (isWsToken(tok)) continue;   // <- neu
+        results.add(new MatchResult(s[0], s[1], true));
+      }
 
-      // Roten Tail NUR planen, wenn der Parser einen echten Stop-Index liefert (>= 0)
-      if (!green.isEmpty() && parseResult >= 0) {
-        int tailStart = green.get(green.size() - 1).endOffset;
+      // Rot (verzögert): nur, wenn wirklich Fehler/Extra vorliegt (also NICHT -2)
+      boolean shouldPaintRed =
+          (rFull == -1 || rFull == -100) ||
+              (rFull >= 0 && rFull < testTokens.size());
+
+      if (shouldPaintRed) {
+        int tailStart = (accepted > 0) ? segs.get(accepted - 1)[1] : 0;
         if (tailStart < testText.length()) {
           results.add(new MatchResult(tailStart, testText.length(), false));
         }
@@ -262,6 +288,71 @@ public class EbnfLiveTesterPanel implements Disposable {
     }
     return results;
   }
+
+  private List<int[]> lexTokenSegments(String text, TokenQueue tokens) {
+    List<int[]> segs = new ArrayList<>();
+    if (text == null || tokens == null) return segs;
+
+    int cursor = 0;
+    for (String tok : tokens.getTokens()) {
+      if (tok == null) break;
+
+      int end = cursor + tok.length();
+      if (end > text.length()) break;
+
+      // Idealfall: 1:1 Slice Match
+      if (!text.regionMatches(cursor, tok, 0, tok.length())) {
+        // Fallback: nur um nicht komplett auszufallen (sollte im neuen System selten sein)
+        int start = text.indexOf(tok, cursor);
+        if (start < 0) break;
+        cursor = start;
+        end = cursor + tok.length();
+        if (end > text.length()) break;
+      }
+
+      segs.add(new int[]{cursor, end});
+      cursor = end;
+    }
+    return segs;
+  }
+
+  private int longestAcceptedPrefixCount(Parser parser, String fullText, List<int[]> tokenSegs) {
+    int best = 0;
+    for (int k = 1; k <= tokenSegs.size(); k++) {
+      int endChar = tokenSegs.get(k - 1)[1];
+      String prefix = fullText.substring(0, endChar);
+
+      int r = parser.parse(prefix);
+
+      if (r == -2) {
+        // Nur „akzeptiert“, wenn das Präfix substantiell ist:
+        // - mindestens 2 Tokens, oder
+        // - das aktuelle (k-te) Token ist länger als 1 Zeichen (Keyword etc.)
+        int[] seg = tokenSegs.get(k - 1);
+        int tokenCharLen = seg[1] - seg[0];
+        boolean substantial = (k >= 2) || (tokenCharLen > 1);
+
+        if (substantial) {
+          best = k;
+        }
+        // andernfalls kein Upgrade von 'best' → erstes 1-Zeichen-Token bleibt ungrün
+      } else if (r == k) {
+        // kompletter Erfolg für das Präfix → k Tokens akzeptiert
+        best = k;
+      } else if (r >= 0 && r < k) {
+        // Parser meldet: bis r Tokens ok, dann Extra/Ende → r ist akzeptierter Präfix
+        best = Math.max(best, r);
+      } else if (r == -1 || r == -100) {
+        // echter Fehler im Präfix → nichts zusätzlich akzeptiert
+        // best bleibt; wir KÖNNTEN abbrechen:
+        // break;
+      } else {
+        // r > k (sollte nicht vorkommen) oder andere Fälle: ignoriere, best bleibt
+      }
+    }
+    return best;
+  }
+
 
   private List<MatchResult> computeMatchedTokenSegments(String text, List<String> tokens, int matchedCount) {
     List<MatchResult> segs = new ArrayList<>();
@@ -374,5 +465,4 @@ public class EbnfLiveTesterPanel implements Disposable {
     for (RangeHighlighter hl : redHighlighters) mm.removeHighlighter(hl);
     redHighlighters.clear();
   }
-
 }

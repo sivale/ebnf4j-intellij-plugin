@@ -1,4 +1,4 @@
-package com.sverko.ebnf4j.psi;
+package com.sverko.ebnf4j.parser;
 
 import com.intellij.psi.tree.IElementType;
 import com.sverko.ebnf4j.EbnfLanguage;
