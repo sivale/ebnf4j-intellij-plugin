@@ -155,6 +155,9 @@ public class EbnfLiveTesterPanel implements Disposable {
       return EditorFactory.getInstance().createEditor(
           d, project, com.intellij.openapi.fileTypes.PlainTextFileType.INSTANCE, false);
     });
+    testEditor.getSettings().setTabSize(4);
+    testEditor.getSettings().setVirtualSpace(true);
+    testEditor.getSettings().setUseTabCharacter(true);
     swapRightEditor(testEditor);
 
     updateHighlighting();
@@ -168,8 +171,11 @@ public class EbnfLiveTesterPanel implements Disposable {
 
   // -------- Test-Editor swappen & Listener managen --------
   private void swapRightEditor(@Nullable Editor newEditor) {
-    detachTestListener();
+    errorAlarm.cancelAllRequests();
+    removeGreenHighlighters();
+    removeRedHighlighters();
 
+    detachTestListener();
     centerPanel.removeAll();
     currentTestEditor = newEditor;
 
@@ -247,10 +253,10 @@ public class EbnfLiveTesterPanel implements Disposable {
 
       // Akzeptierte Token-Anzahl bestimmen
       int accepted;
-      if (rFull == testTokens.size()) {
+      if (rFull == testTokens.rawSize()) {
         // kompletter Erfolg
         accepted = segs.size();
-      } else if (rFull >= 0 && rFull < testTokens.size()) {
+      } else if (rFull >= 0 && rFull < testTokens.rawSize()) {
         // Parser hat n akzeptiert und dann Schluss gemacht → n ist Präfix
         accepted = Math.min(rFull, segs.size());
       } else if (rFull == -2) {
@@ -258,21 +264,21 @@ public class EbnfLiveTesterPanel implements Disposable {
         accepted = segs.size();
       } else {
         // -1, -100 oder sonstiger Fehler: via Präfix-Suche ermitteln
-        accepted = longestAcceptedPrefixCount(parser, testText, segs);
+        accepted = parser.getTokenQueue().getLastTokenFound();
       }
 
       // Grün: genau die akzeptierten Token-Segmente
       for (int i = 0; i < accepted; i++) {
         int[] s = segs.get(i);
         String tok = testTokens.get(i);
-        if (isWsToken(tok)) continue;   // <- neu
+        if (testTokens.isUnhandledWhitespace(i)) continue;   // <- neu
         results.add(new MatchResult(s[0], s[1], true));
       }
 
       // Rot (verzögert): nur, wenn wirklich Fehler/Extra vorliegt (also NICHT -2)
       boolean shouldPaintRed =
           (rFull == -1 || rFull == -100) ||
-              (rFull >= 0 && rFull < testTokens.size());
+              (rFull >= 0 && rFull < testTokens.rawSize());
 
       if (shouldPaintRed) {
         int tailStart = (accepted > 0) ? segs.get(accepted - 1)[1] : 0;
@@ -315,44 +321,6 @@ public class EbnfLiveTesterPanel implements Disposable {
     }
     return segs;
   }
-
-  private int longestAcceptedPrefixCount(Parser parser, String fullText, List<int[]> tokenSegs) {
-    int best = 0;
-    for (int k = 1; k <= tokenSegs.size(); k++) {
-      int endChar = tokenSegs.get(k - 1)[1];
-      String prefix = fullText.substring(0, endChar);
-
-      int r = parser.parse(prefix);
-
-      if (r == -2) {
-        // Nur „akzeptiert“, wenn das Präfix substantiell ist:
-        // - mindestens 2 Tokens, oder
-        // - das aktuelle (k-te) Token ist länger als 1 Zeichen (Keyword etc.)
-        int[] seg = tokenSegs.get(k - 1);
-        int tokenCharLen = seg[1] - seg[0];
-        boolean substantial = (k >= 2) || (tokenCharLen > 1);
-
-        if (substantial) {
-          best = k;
-        }
-        // andernfalls kein Upgrade von 'best' → erstes 1-Zeichen-Token bleibt ungrün
-      } else if (r == k) {
-        // kompletter Erfolg für das Präfix → k Tokens akzeptiert
-        best = k;
-      } else if (r >= 0 && r < k) {
-        // Parser meldet: bis r Tokens ok, dann Extra/Ende → r ist akzeptierter Präfix
-        best = Math.max(best, r);
-      } else if (r == -1 || r == -100) {
-        // echter Fehler im Präfix → nichts zusätzlich akzeptiert
-        // best bleibt; wir KÖNNTEN abbrechen:
-        // break;
-      } else {
-        // r > k (sollte nicht vorkommen) oder andere Fälle: ignoriere, best bleibt
-      }
-    }
-    return best;
-  }
-
 
   private List<MatchResult> computeMatchedTokenSegments(String text, List<String> tokens, int matchedCount) {
     List<MatchResult> segs = new ArrayList<>();
@@ -414,10 +382,10 @@ public class EbnfLiveTesterPanel implements Disposable {
 
       // falls zwischenzeitlich was Rot gesetzt wurde, bereinigen
       removeRedHighlighters();
-
+      var mmNow = currentTestEditor.getMarkupModel();
       for (MatchResult m : matches) {
         if (m.isMatch) continue;
-        RangeHighlighter hl = mm.addRangeHighlighter(
+        RangeHighlighter hl = mmNow.addRangeHighlighter(
             m.startOffset, m.endOffset,
             HighlighterLayer.SELECTION - 1,
             ERROR_ATTRIBUTES,
@@ -453,16 +421,16 @@ public class EbnfLiveTesterPanel implements Disposable {
   }
 
   private void removeGreenHighlighters() {
-    if (currentTestEditor == null) return;
-    var mm = currentTestEditor.getMarkupModel();
-    for (RangeHighlighter hl : greenHighlighters) mm.removeHighlighter(hl);
+    for (RangeHighlighter hl : greenHighlighters) {
+      try { hl.dispose(); } catch (Throwable ignored) {}
+    }
     greenHighlighters.clear();
   }
 
   private void removeRedHighlighters() {
-    if (currentTestEditor == null) return;
-    var mm = currentTestEditor.getMarkupModel();
-    for (RangeHighlighter hl : redHighlighters) mm.removeHighlighter(hl);
+    for (RangeHighlighter hl : redHighlighters) {
+      try { hl.dispose(); } catch (Throwable ignored) {}
+    }
     redHighlighters.clear();
   }
 }
