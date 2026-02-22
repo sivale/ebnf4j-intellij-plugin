@@ -13,6 +13,7 @@ public class EbnfLiveTesterToolWindowFactory implements ToolWindowFactory {
   public void createToolWindowContent(@NotNull Project project, @NotNull ToolWindow toolWindow) {
     EbnfLiveTesterPanel testerPanel = new EbnfLiveTesterPanel(project);
     Content content = ContentFactory.getInstance().createContent(testerPanel.getComponent(), "", false);
+    content.setDisposer(testerPanel);
     toolWindow.getContentManager().addContent(content);
   }
 }
