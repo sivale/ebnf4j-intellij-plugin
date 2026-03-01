@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.sverko"
-version = "0.2.5"
+version = "0.2.7"
 
 repositories {
     mavenCentral()
@@ -24,7 +24,7 @@ dependencies {
         // Add necessary plugin dependencies for compilation here, example:
         // bundledPlugin("com.intellij.java")
     }
-    implementation("com.sverko.ebnf:ebnf-parser-generator:0.2.5")
+    implementation("com.sverko.ebnf:ebnf-parser-generator:0.2.7")
 }
 
 intellijPlatform {

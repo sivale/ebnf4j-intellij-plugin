@@ -75,6 +75,7 @@ public class EbnfSyntaxHighlighter extends SyntaxHighlighterBase implements Ebnf
     KEYS.put(STAR, OPERATOR_KEY);
     KEYS.put(L_BRACE, BRACES_KEY);
     KEYS.put(R_BRACE, BRACES_KEY);
+    KEYS.put(COL_BRACE,BRACES_KEY);
     KEYS.put(L_BRACKET, BRACKETS_KEY);
     KEYS.put(R_BRACKET, BRACKETS_KEY);
     KEYS.put(L_PAREN, PARENTHESES_KEY);

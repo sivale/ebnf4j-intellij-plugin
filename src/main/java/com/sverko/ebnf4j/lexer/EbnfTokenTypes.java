@@ -17,6 +17,7 @@ public interface EbnfTokenTypes {
   IElementType STAR = type("STAR");             // *
   IElementType L_BRACE = type("L_BRACE");       // {
   IElementType R_BRACE = type("R_BRACE");       // }
+  IElementType COL_BRACE = type("COL_BRACE");   // {:
   IElementType L_BRACKET = type("L_BRACKET");   // [
   IElementType R_BRACKET = type("R_BRACKET");   // ]
   IElementType L_PAREN = type("L_PAREN");       // (

@@ -238,7 +238,7 @@ public class EbnfLiveTesterPanel implements Disposable {
   private List<MatchResult> parseAndMatch(String schema, String testText) {
     List<MatchResult> results = new ArrayList<>();
     try {
-      Lexer schemaLexer = new Lexer(Set.of("\\n","\\t","\\s"));
+      Lexer schemaLexer = new Lexer(Set.of("\\n","\\t","\\s","{:"));
       TokenQueue schemaTokens = schemaLexer.lexText(schema);
 
       EbnfParserGenerator generator = new EbnfParserGenerator();

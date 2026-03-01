@@ -11,7 +11,6 @@ import com.sverko.ebnf.ParseNode;
 import com.sverko.ebnf.TokenQueue;
 import com.sverko.ebnf4j.EbnfFileType;
 import com.sverko.ebnf4j.EbnfLanguage;
-import java.util.Collections;
 import java.util.Map;
 import java.util.Set;
 import org.jetbrains.annotations.NotNull;
@@ -76,7 +75,7 @@ public class EbnfExternalAnnotator extends ExternalAnnotator<EbnfExternalAnnotat
       EbnfSymbolTracker symbolTracker = new EbnfSymbolTracker(generator.getPredefinedNodeNames());
 
       // Use the EBNF Lexer to get tokens (for offset calculation)
-      com.sverko.ebnf.Lexer ebnfLexer = new com.sverko.ebnf.Lexer(Set.of("\\n","\\t","\\s"), true);
+      com.sverko.ebnf.Lexer ebnfLexer = new com.sverko.ebnf.Lexer(Set.of("\\n","\\t","\\s","{:"), true);
       TokenQueue tokens = ebnfLexer.lexText(input.text);
 
       // Build token→document mapping (start + length per token)
@@ -92,7 +91,7 @@ public class EbnfExternalAnnotator extends ExternalAnnotator<EbnfExternalAnnotat
       com.sverko.ebnf.Parser schemaParser = new com.sverko.ebnf.Parser(
           ebnfSchemaStartNode,
           ebnfNodeMap,
-          Set.of("\\n","\\t","\\s"), // No special lexer tokens needed for EBNF schema
+          Set.of("\\n","\\t","\\s","{:"), // No special lexer tokens needed for EBNF schema
           false // strict whitespace handling
       );
 
@@ -108,6 +107,8 @@ public class EbnfExternalAnnotator extends ExternalAnnotator<EbnfExternalAnnotat
           "start group symbol",
           "end group symbol",
           "start repeat symbol",
+          "start collect symbol",
+          "end collect symbol",
           "end repeat symbol",
           "terminator symbol",
           "special sequence",

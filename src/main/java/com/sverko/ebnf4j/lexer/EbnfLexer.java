@@ -90,7 +90,15 @@ public class EbnfLexer extends LexerBase implements EbnfTokenTypes {
       case ';': tokenEnd = tokenStart + 1; tokenType = SEMICOLON; return;
       case '-': tokenEnd = tokenStart + 1; tokenType = MINUS; return;
       case '*': tokenEnd = tokenStart + 1; tokenType = STAR; return;
-      case '{': tokenEnd = tokenStart + 1; tokenType = L_BRACE; return;
+      case '{':
+        if (tokenStart + 1 < endOffset && buffer.charAt(tokenStart + 1) == ':') {
+          tokenEnd = tokenStart + 2;
+          tokenType = COL_BRACE;
+          return;
+        }
+        tokenEnd = tokenStart + 1;
+        tokenType = L_BRACE;
+        return;
       case '}': tokenEnd = tokenStart + 1; tokenType = R_BRACE; return;
       case '[': tokenEnd = tokenStart + 1; tokenType = L_BRACKET; return;
       case ']': tokenEnd = tokenStart + 1; tokenType = R_BRACKET; return;
