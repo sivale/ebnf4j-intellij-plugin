@@ -43,7 +43,7 @@ public class EbnfSymbolTracker implements ParseNodeEventListener {
 
   @Override
   public void parseNodeEventOccurred(com.sverko.ebnf.ParseNodeEvent e) {
-    System.out.println(e.getNode().getName() + ": " + e.getTrimmed());
+    //System.out.println(e.getNode().getName() + ": " + e.getTrimmed());
     switch (e.getNode().getName()) {
       case "meta identifier":
         if (!afterDefiningSymbol) {

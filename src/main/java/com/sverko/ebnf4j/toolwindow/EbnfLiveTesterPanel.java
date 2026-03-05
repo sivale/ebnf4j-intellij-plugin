@@ -2,6 +2,7 @@ package com.sverko.ebnf4j.toolwindow;
 
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.editor.EditorFactory;
@@ -43,23 +44,29 @@ public class EbnfLiveTesterPanel implements Disposable {
 
   private final JPanel centerPanel;
   private final Map<VirtualFile, Editor> testEditorsBySchema = new HashMap<>();
-  private @Nullable Editor currentTestEditor;
+  private  Editor currentTestEditor;
 
-  private @Nullable VirtualFile currentSchemaFile;
-  private @Nullable Document currentSchemaDoc;
+  private  VirtualFile currentSchemaFile;
+  private  Document currentSchemaDoc;
 
-  private @Nullable DocumentListener schemaDocListener;
-  private @Nullable DocumentListener testDocListener;
+  private  DocumentListener schemaDocListener;
+  private  DocumentListener testDocListener;
 
   private static final int ERROR_DEBOUNCE_MS = 1000;
+  private static final int PARSE_DEBOUNCE_MS = 200;
+  private static final int MAX_HIGHLIGHT_SEGMENTS = 20_000;
   private final Alarm errorAlarm = new Alarm(Alarm.ThreadToUse.SWING_THREAD, this);
+  private final Alarm parseAlarm = new Alarm(Alarm.ThreadToUse.POOLED_THREAD, this);
 
   private final List<RangeHighlighter> greenHighlighters = new ArrayList<>();
   private final List<RangeHighlighter> redHighlighters   = new ArrayList<>();
+  private final Object parserLock = new Object();
+  private volatile  Parser cachedParser;
+  private volatile long cachedSchemaStamp = -1;
 
   // Highlighting
   private static final TextAttributes MATCH_ATTRIBUTES = new TextAttributes(
-      Color.BLACK, new Color(144, 238, 144), null, null, Font.PLAIN); // hellgrün
+      Color.BLACK, new Color(144, 238, 144), null, null, Font.PLAIN); // hellgruen
   private static final TextAttributes ERROR_ATTRIBUTES = new TextAttributes(
       Color.WHITE, new Color(255, 182, 193), null, null, Font.PLAIN); // hellrot
 
@@ -81,7 +88,7 @@ public class EbnfLiveTesterPanel implements Disposable {
 
     centerPanel = new JPanel(new BorderLayout());
     centerPanel.setBorder(BorderFactory.createEmptyBorder());
-    centerPanel.add(placeholder("Öffne eine .ebnf-Datei – hier erscheint dann dein zugehöriger Testtext."),
+    centerPanel.add(placeholder("Oeffne eine .ebnf-Datei – hier erscheint dann dein zugehoeriger Testtext."),
         BorderLayout.CENTER);
 
     root.add(centerPanel, BorderLayout.CENTER);
@@ -90,7 +97,7 @@ public class EbnfLiveTesterPanel implements Disposable {
     project.getMessageBus().connect(this).subscribe(
         FileEditorManagerListener.FILE_EDITOR_MANAGER,
         new FileEditorManagerListener() {
-          @Override public void selectionChanged(@NotNull FileEditorManagerEvent event) {
+           public void selectionChanged( FileEditorManagerEvent event) {
             attachSchemaFileAsync(event.getNewFile());
           }
         });
@@ -117,11 +124,11 @@ public class EbnfLiveTesterPanel implements Disposable {
     return p;
   }
 
-  private void attachSchemaFileAsync(@Nullable VirtualFile vf) {
+  private void attachSchemaFileAsync( VirtualFile vf) {
     ApplicationManager.getApplication().invokeLater(() -> attachSchemaFile(vf));
   }
 
-  private void attachSchemaFile(@Nullable VirtualFile vf) {
+  private void attachSchemaFile( VirtualFile vf) {
     if (vf == null || !(vf.getFileType() instanceof EbnfFileType)) {
       detachSchemaListener();
       detachTestListener();
@@ -141,15 +148,17 @@ public class EbnfLiveTesterPanel implements Disposable {
 
     detachSchemaListener();
     currentSchemaDoc = schemaDoc;
+    cachedParser = null;
+    cachedSchemaStamp = -1;
 
     updateToolWindowTitle(vf.getName());
 
     schemaDocListener = new DocumentListener() {
-      @Override public void documentChanged(@NotNull DocumentEvent event) { updateHighlighting(); }
+       public void documentChanged( DocumentEvent event) { updateHighlighting(); }
     };
     currentSchemaDoc.addDocumentListener(schemaDocListener);
 
-    // Test-Editor für dieses Schema holen/erstellen
+    // Test-Editor fuer dieses Schema holen/erstellen
     Editor testEditor = testEditorsBySchema.computeIfAbsent(vf, file -> {
       Document d = EditorFactory.getInstance().createDocument("");
       return EditorFactory.getInstance().createEditor(
@@ -163,14 +172,14 @@ public class EbnfLiveTesterPanel implements Disposable {
     updateHighlighting();
   }
 
-  private void updateToolWindowTitle(@Nullable String fileName) {
+  private void updateToolWindowTitle( String fileName) {
     ToolWindow tw = ToolWindowManager.getInstance(project).getToolWindow("EBNF Live Tester");
     if (tw == null) return;
     try { tw.setTitle(fileName != null ? fileName : ""); } catch (Throwable ignored) {}
   }
 
   // -------- Test-Editor swappen & Listener managen --------
-  private void swapRightEditor(@Nullable Editor newEditor) {
+  private void swapRightEditor( Editor newEditor) {
     errorAlarm.cancelAllRequests();
     removeGreenHighlighters();
     removeRedHighlighters();
@@ -185,11 +194,11 @@ public class EbnfLiveTesterPanel implements Disposable {
       centerPanel.add(comp, BorderLayout.CENTER);
 
       testDocListener = new DocumentListener() {
-        @Override public void documentChanged(@NotNull DocumentEvent event) { updateHighlighting(); }
+         public void documentChanged( DocumentEvent event) { updateHighlighting(); }
       };
       newEditor.getDocument().addDocumentListener(testDocListener);
     } else {
-      centerPanel.add(placeholder("Öffne eine .ebnf-Datei – hier erscheint dann dein zugehöriger Testtext."),
+      centerPanel.add(placeholder("Oeffne eine .ebnf-Datei – hier erscheint dann dein zugehoeriger Testtext."),
           BorderLayout.CENTER);
     }
 
@@ -213,37 +222,70 @@ public class EbnfLiveTesterPanel implements Disposable {
 
   // -------- Parsing & Highlight --------
   private void updateHighlighting() {
-    if (!ApplicationManager.getApplication().isDispatchThread()) {
-      ApplicationManager.getApplication().invokeLater(this::updateHighlighting);
+    parseAlarm.cancelAllRequests();
+    parseAlarm.addRequest(this::parseInBackground, PARSE_DEBOUNCE_MS);
+  }
+
+  private void parseInBackground() {
+    Document schemaDoc = currentSchemaDoc;
+    Editor testEditor = currentTestEditor;
+    if (schemaDoc == null || testEditor == null) return;
+
+    TextSnapshot schemaSnap = ReadAction.compute(() ->
+        new TextSnapshot(schemaDoc.getModificationStamp(), schemaDoc.getText()));
+    TextSnapshot testSnap = ReadAction.compute(() ->
+        new TextSnapshot(testEditor.getDocument().getModificationStamp(), testEditor.getDocument().getText()));
+
+    if (schemaSnap.text.trim().isEmpty() || testSnap.text.trim().isEmpty()) {
+      ApplicationManager.getApplication().invokeLater(this::clearHighlighting);
       return;
     }
-    try {
-      String schema = (currentSchemaDoc != null) ? currentSchemaDoc.getText() : "";
-      String testText = (currentTestEditor != null) ? currentTestEditor.getDocument().getText() : "";
 
-      if (schema.trim().isEmpty() || testText.trim().isEmpty()) {
-        clearHighlighting();
-        return;
-      }
+    Parser parser = getOrBuildParser(schemaSnap);
+    if (parser == null) {
+      ApplicationManager.getApplication().invokeLater(this::clearHighlighting);
+      return;
+    }
 
-      List<MatchResult> matches = parseAndMatch(schema, testText);
+    List<MatchResult> matches;
+    synchronized (parserLock) {
+      matches = parseAndMatch(parser, testSnap.text);
+    }
+
+    ApplicationManager.getApplication().invokeLater(() -> {
+      if (currentSchemaDoc == null || currentTestEditor == null) return;
+      if (currentSchemaDoc.getModificationStamp() != schemaSnap.stamp) return;
+      if (currentTestEditor.getDocument().getModificationStamp() != testSnap.stamp) return;
       applyHighlightsWithDelay(matches);
+    });
+  }
 
-    } catch (Exception e) {
-      System.err.println("Error in live updating: " + e.getMessage());
-      clearHighlighting();
+  private  Parser getOrBuildParser(TextSnapshot schemaSnap) {
+    synchronized (parserLock) {
+      if (cachedParser != null && cachedSchemaStamp == schemaSnap.stamp) {
+        return cachedParser;
+      }
+      try {
+        Lexer schemaLexer = new Lexer(Set.of("\n","\t","\s","{:"));
+        TokenQueue schemaTokens = schemaLexer.lexText(schemaSnap.text);
+
+        EbnfParserGenerator generator = new EbnfParserGenerator();
+        Parser parser = generator.getParser(schemaTokens, true);
+        cachedParser = parser;
+        cachedSchemaStamp = schemaSnap.stamp;
+        return parser;
+      } catch (Exception e) {
+        System.err.println("Error building parser: " + e.getMessage());
+        cachedParser = null;
+        cachedSchemaStamp = -1;
+        return null;
+      }
     }
   }
 
-  private List<MatchResult> parseAndMatch(String schema, String testText) {
+  private List<MatchResult> parseAndMatch(Parser parser, String testText) {
     List<MatchResult> results = new ArrayList<>();
     try {
-      Lexer schemaLexer = new Lexer(Set.of("\\n","\\t","\\s","{:"));
-      TokenQueue schemaTokens = schemaLexer.lexText(schema);
-
-      EbnfParserGenerator generator = new EbnfParserGenerator();
-      Parser parser = generator.getParser(schemaTokens, true);
-
       // Gesamter Parse
       int rFull = parser.parse(testText);
 
@@ -257,28 +299,36 @@ public class EbnfLiveTesterPanel implements Disposable {
         // kompletter Erfolg
         accepted = segs.size();
       } else if (rFull >= 0 && rFull < testTokens.rawSize()) {
-        // Parser hat n akzeptiert und dann Schluss gemacht → n ist Präfix
+        // Parser hat n akzeptiert und dann Schluss gemacht -> n ist Praefix
         accepted = Math.min(rFull, segs.size());
       } else if (rFull == -2) {
-        // EndOfQueue zu früh: alles bisherige ist akzeptiert
+        // EndOfQueue zu frueh: alles bisherige ist akzeptiert
         accepted = segs.size();
       } else {
-        // -1, -100 oder sonstiger Fehler: via Präfix-Suche ermitteln
+        // -1, -100 oder sonstiger Fehler: via Praefix-Suche ermitteln
         accepted = parser.getTokenQueue().getLastTokenFound();
       }
 
-      // Grün: genau die akzeptierten Token-Segmente
-      for (int i = 0; i < accepted; i++) {
-        int[] s = segs.get(i);
-        String tok = testTokens.get(i);
-        if (testTokens.isUnhandledWhitespace(i)) continue;   // <- neu
-        results.add(new MatchResult(s[0], s[1], true));
-      }
-
-      // Rot (verzögert): nur, wenn wirklich Fehler/Extra vorliegt (also NICHT -2)
+      // Rot (verzoegert): nur, wenn wirklich Fehler/Extra vorliegt (also NICHT -2)
       boolean shouldPaintRed =
           (rFull == -1 || rFull == -100) ||
               (rFull >= 0 && rFull < testTokens.rawSize());
+
+      if (segs.size() > MAX_HIGHLIGHT_SEGMENTS) {
+        int greenEnd = (accepted > 0) ? segs.get(accepted - 1)[1] : 0;
+        if (greenEnd > 0) results.add(new MatchResult(0, greenEnd, true));
+        if (shouldPaintRed && greenEnd < testText.length()) {
+          results.add(new MatchResult(greenEnd, testText.length(), false));
+        }
+        return results;
+      }
+
+      // Gruen: genau die akzeptierten Token-Segmente
+      for (int i = 0; i < accepted; i++) {
+        int[] s = segs.get(i);
+        if (testTokens.isUnhandledWhitespace(i)) continue;
+        results.add(new MatchResult(s[0], s[1], true));
+      }
 
       if (shouldPaintRed) {
         int tailStart = (accepted > 0) ? segs.get(accepted - 1)[1] : 0;
@@ -350,7 +400,7 @@ public class EbnfLiveTesterPanel implements Disposable {
   private void applyHighlightsWithDelay(List<MatchResult> matches) {
     if (currentTestEditor == null) return;
 
-    // bei jeder Änderung: alles Alte weg, Grün sofort neu setzen
+    // bei jeder Aenderung: alles Alte weg, Gruen sofort neu setzen
     errorAlarm.cancelAllRequests();
     removeGreenHighlighters();
     removeRedHighlighters();
@@ -359,7 +409,7 @@ public class EbnfLiveTesterPanel implements Disposable {
     long stamp = doc.getModificationStamp();
     var mm = currentTestEditor.getMarkupModel();
 
-    // 4a) Grün sofort
+    // 4a) Gruen sofort
     for (MatchResult m : matches) {
       if (!m.isMatch) continue;
       RangeHighlighter hl = mm.addRangeHighlighter(
@@ -371,12 +421,12 @@ public class EbnfLiveTesterPanel implements Disposable {
       greenHighlighters.add(hl);
     }
 
-    // 4b) Rot später (nur wenn es überhaupt rote Ranges gibt)
+    // 4b) Rot spaeter (nur wenn es ueberhaupt rote Ranges gibt)
     boolean hasRed = matches.stream().anyMatch(x -> !x.isMatch);
     if (!hasRed) return;
 
     errorAlarm.addRequest(() -> {
-      // nur anwenden, wenn sich der Text seit dem Planen nicht verändert hat
+      // nur anwenden, wenn sich der Text seit dem Planen nicht veraendert hat
       if (currentTestEditor == null) return;
       if (currentTestEditor.getDocument().getModificationStamp() != stamp) return;
 
@@ -405,7 +455,7 @@ public class EbnfLiveTesterPanel implements Disposable {
 
   public JComponent getComponent() { return mainPanel; }
 
-  @Override
+  
   public void dispose() {
     detachSchemaListener();
     detachTestListener();
@@ -418,6 +468,15 @@ public class EbnfLiveTesterPanel implements Disposable {
   private static class MatchResult {
     final int startOffset, endOffset; final boolean isMatch;
     MatchResult(int s, int e, boolean ok) { this.startOffset = s; this.endOffset = e; this.isMatch = ok; }
+  }
+
+  private static class TextSnapshot {
+    final long stamp;
+    final String text;
+    TextSnapshot(long stamp, String text) {
+      this.stamp = stamp;
+      this.text = text;
+    }
   }
 
   private void removeGreenHighlighters() {

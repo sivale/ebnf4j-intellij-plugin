@@ -25,6 +25,23 @@ import java.util.List;
  */
 public class EbnfExternalAnnotator extends ExternalAnnotator<EbnfExternalAnnotator.Input, EbnfExternalAnnotator.Result> {
 
+  private static final Set<String> SCHEMA_LEXER_TOKENS = Set.of("\\n","\\t","\\s","{:");
+  private static final List<String> PREDEFINED_NODE_NAMES =
+      new EbnfParserGenerator().getDefaultEventEmittingNodes();
+
+  private static final ThreadLocal<com.sverko.ebnf.Parser> SCHEMA_PARSER =
+      ThreadLocal.withInitial(() -> {
+        System.out.println("\nSchema parser build\n");
+        ParseNode ebnfSchemaStartNode = com.sverko.ebnf.EbnfParseTree.getStartNode();
+        Map<String, ParseNode> ebnfNodeMap = com.sverko.ebnf.EbnfParseTree.getNodeMap();
+        return new com.sverko.ebnf.Parser(
+            ebnfSchemaStartNode,
+            ebnfNodeMap,
+            SCHEMA_LEXER_TOKENS,
+            false
+        );
+      });
+
   public static class Input {
     final String text;
     final Document document;
@@ -71,11 +88,10 @@ public class EbnfExternalAnnotator extends ExternalAnnotator<EbnfExternalAnnotat
 
     try {
       long startTime = System.currentTimeMillis();
-      EbnfParserGenerator generator = new EbnfParserGenerator();
-      EbnfSymbolTracker symbolTracker = new EbnfSymbolTracker(generator.getPredefinedNodeNames());
+      EbnfSymbolTracker symbolTracker = new EbnfSymbolTracker(PREDEFINED_NODE_NAMES);
 
       // Use the EBNF Lexer to get tokens (for offset calculation)
-      com.sverko.ebnf.Lexer ebnfLexer = new com.sverko.ebnf.Lexer(Set.of("\\n","\\t","\\s","{:"), true);
+      com.sverko.ebnf.Lexer ebnfLexer = new com.sverko.ebnf.Lexer(SCHEMA_LEXER_TOKENS, true);
       TokenQueue tokens = ebnfLexer.lexText(input.text);
 
       // Build token→document mapping (start + length per token)
@@ -84,38 +100,11 @@ public class EbnfExternalAnnotator extends ExternalAnnotator<EbnfExternalAnnotat
       int[] tokenLengths = tm.lengths;
 
       // NEW: Use the hardcoded EBNF schema parser instead of generated parser
-      ParseNode ebnfSchemaStartNode = com.sverko.ebnf.EbnfParseTree.getStartNode();
-      Map<String, ParseNode> ebnfNodeMap = com.sverko.ebnf.EbnfParseTree.getNodeMap();
-
-      // Create parser with the hardcoded EBNF schema
-      com.sverko.ebnf.Parser schemaParser = new com.sverko.ebnf.Parser(
-          ebnfSchemaStartNode,
-          ebnfNodeMap,
-          Set.of("\\n","\\t","\\s","{:"), // No special lexer tokens needed for EBNF schema
-          false // strict whitespace handling
-      );
+      // Reuse the schema parser (per thread) instead of rebuilding per keystroke
+      com.sverko.ebnf.Parser schemaParser = SCHEMA_PARSER.get();
 
       // Add symbol tracker as event listener to all relevant EBNF nodes
-      schemaParser.assignNodeEventListeners(symbolTracker,
-          "meta identifier",
-          "defining symbol",
-          "concatenate symbol",
-          "definition separator symbol",
-          "terminal string",
-          "start option symbol",
-          "end option symbol",
-          "start group symbol",
-          "end group symbol",
-          "start repeat symbol",
-          "start collect symbol",
-          "end collect symbol",
-          "end repeat symbol",
-          "terminator symbol",
-          "special sequence",
-          "except symbol",
-          "integer",
-          "repetition symbol"
-      );
+      schemaParser.assignNodeEventListeners(symbolTracker, PREDEFINED_NODE_NAMES.toArray(new String[0]));
 
       int parseResult = schemaParser.parse(input.text);
 
